@@ -1,43 +1,42 @@
-env.HOME = env.JENKINS_HOME
-env.JAVA_TOOL_OPTIONS = "-Duser.home=${env.HOME}/maven"
- 
-node {
-    stage('checkout') {
-        deleteDir()
-        checkout scm
+pipeline {
+  agent {
+    kubernetes {
+      yaml """
+kind: Pod
+spec:
+  containers:
+  - name: kaniko
+    image: gcr.io/kaniko-project/executor:debug
+    imagePullPolicy: Always
+    command:
+    - sleep
+    args:
+    - 9999999
+    volumeMounts:
+      - name: jenkins-docker-cfg
+        mountPath: /kaniko/.docker
+  volumes:
+  - name: jenkins-docker-cfg
+    projected:
+      sources:
+      - secret:
+          name: docker-credentials 
+          items:
+            - key: .dockerconfigjson
+              path: config.json
+"""
     }
-    
-    stage('build') {
-        sh script:"docker volume rm maven-cache && docker volume create maven-cache", returnStatus: true
-        docker.image('maven:3.6.3-jdk-8').inside() {
-            sh "mvn package -Dmaven.test.skip=true"
+  }
+  stages {
+    stage('Build with Kaniko') {
+      steps {
+        container(name: 'kaniko', shell: '/busybox/sh') {
+          sh '''#!/busybox/sh
+            echo "FROM jenkins/inbound-agent:latest" > Dockerfile
+            /kaniko/executor --context `pwd` --destination haissreddy1/hello-kaniko:latest 
+          '''
         }
-        archiveArtifacts artifacts: 'target/**/*.jar'
+      }
     }
-    
-    stage('test') {
-        docker.image('maven:3.6.3-jdk-8').inside() {
-            def retSt = sh returnStatus: true, script: 'mvn test'
-            echo "Beendet mit " + retSt
-        } 
-        junit 'target/surefire-reports/*Tests.xml'
-    }
-    stage('analyse') {
-        docker.image('maven:3.6.3-jdk-8').inside() {
-            sh 'mvn pmd:pmd'
-            sh 'mvn findbugs:findbugs'
-            sh 'mvn checkstyle:checkstyle'
-        }
-
-        recordIssues(tools: [checkStyle()])
-        recordIssues(tools: [findBugs(useRankAsPriority: true)])
-        recordIssues(tools: [pmdParser()])
-    }
-
-    stage('build image') {
-        docker.withRegistry('https://gitlab.comquent.academy:5050', 'cq-academy-gitlab-access') {
-            def myImage = docker.build('tn00/petclinic')
-            myImage.push('latest')
-        }    
-    }
+  }
 }
